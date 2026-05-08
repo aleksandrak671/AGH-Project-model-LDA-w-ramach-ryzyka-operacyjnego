@@ -1,0 +1,1 @@
+# AGH-Project-model-LDA-w-ramach-ryzyka-operacyjnego
