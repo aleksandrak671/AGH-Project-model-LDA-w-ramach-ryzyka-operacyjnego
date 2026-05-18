@@ -1,0 +1,1242 @@
+---
+title: "Projekt 3: Model LDA w ramach ryzyka operacyjnego"
+subtitle: "Metody ryzyka kredytowego i operacyjnego"
+author: "Aleksandra Konopelska"
+date: "`r format(Sys.Date(), '%d.%m.%Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    highlight: tango
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 5,
+  dev = "png",
+  dev.args = list(type = "cairo")
+)
+
+# pakiety
+library(dplyr)
+library(ggplot2)
+library(MASS)
+library(knitr)
+library(kableExtra)
+
+# ziarno dla powtarzalności
+set.seed(123)
+
+# pomocnicza funkcja: formatuje liczbę z przecinkiem jako separator dziesiętny (po polsku)
+liczba <- function(x, n = 4) formatC(x, format = "f", digits = n, decimal.mark = ",")
+```
+
+# Cel projektu
+
+## Pytania teoretyczne
+
+1. Wyjaśnić jakie ryzyko mierzy ryzyko operacyjne.
+2. Na podstawie treści z wykładu (oraz ew. innych wiarygodnych źródeł) wyjaśnić, jak obecnie wyznacza się ryzyko operacyjne w bankach. Dlaczego metoda rozkładu strat (LDA) nie jest uważana za optymalną? 
+
+## Zadanie praktyczne
+
+Do wykonania poniższego zadania należy wykorzystać plik z katalogu dane, który
+zawiera dane dotyczące wysokości strat brutto dla wybranego okresu oraz kategorii
+ryzyka. Stosując AMA (a dokładniej model LDA), wykorzystując dwie dowolne linie
+biznesowe (w pliku jest ich siedem — do analizy należy wybrać dowolne dwie) należy
+wyznaczyć roczny 99,9% OpVaR oraz OpES dla danego banku.
+
+W tym celu:
+
+- Przeprowadzić krótką EDA pokazującą częstotliwość oraz dotkliwość strat
+  operacyjnych w ramach wybranych linii biznesowych.
+- Za pomocą logiki lub/oraz dostępnych testów zgodności dopasować możliwie
+  najlepszy rozkład liczby zdarzeń operacyjnych oraz rozkład ich dotkliwości.
+  Ustalić parametry wybranych rozkładów. Tam, gdzie testy nie pozwalają na
+  sensowną weryfikację założeń o rozkładzie, dobrać rozkład lognormalny.
+- Znając rozkład częstości i rozkład wartości strat (ich parametry) wygenerować
+  10 000 scenariuszy i wyznaczyć symulacyjny rozkład strat.
+- Na podstawie wygenerowanych danych wyznaczyć 99,9% OpVaR oraz OpES.
+
+## Pakiety
+
+Pakiety, które wykorzystuję w projekcie:
+
+```{r eval=FALSE}
+library(dplyr)        # pakiet do przetwarzania danych
+library(ggplot2)      # pakiet do wizualizacji danych
+library(MASS)         # pakiet do dopasowania rozkładów (funkcja fitdistr)
+library(knitr)        # pakiet do tabel
+library(kableExtra)   # pakiet do formatowania tabel
+```
+
+# Część teoretyczna
+
+## Jakie ryzyko mierzy ryzyko operacyjne?
+
+Według Komitetu Bazylejskiego (2001) **ryzyko operacyjne** to ryzyko poniesienia strat
+wskutek stosowania niewłaściwych procesów wewnętrznych lub błędów w ich realizacji,
+wykorzystania nieprawidłowych systemów, działań ludzkich i oddziaływania zdarzeń
+zewnętrznych. Wynika ono z nieprawidłowych i niewłaściwie działających procedur
+wewnętrznych, a obszary jego występowania obejmują m.in.:
+
+- oszustwo wewnętrzne lub zewnętrzne,
+- BHP i relacje z pracownikami,
+- kwestie związane z klientami, produktami i relacjami biznesowymi,
+- zniszczenia fizycznych aktywów.
+
+W odróżnieniu od ryzyka kredytowego i rynkowego ryzyko operacyjne stało się istotne
+stosunkowo niedawno: w latach 90. XX wieku zaczęły rosnąć straty, których nie można
+było przypisać ani ryzyku kredytowemu, ani rynkowemu. Obecnie specjaliści uznają je
+za jeden z najważniejszych rodzajów ryzyka, ponieważ postępująca cyfryzacja sektora
+bankowego, oprócz wygody dla klientów, przyniosła wiele wcześniej niespotykanych
+ryzyk.
+
+Jego pomiar jest jednak o wiele trudniejszy niż pomiar ryzyka kredytowego czy
+rynkowego, ponieważ problemy zaczynają się już na etapie identyfikacji rodzajów
+ryzyka, z jakimi mierzy się bank. Głównym problemem jest poprawne oszacowanie
+prawdopodobieństwa zdarzeń, które zdarzają się bardzo rzadko, ale powodują bardzo
+duże straty.
+
+Pełniejsza klasyfikacja według Bazylei II wyróżnia siedem kategorii zdarzeń:
+
+- oszustwa wewnętrzne i zewnętrzne,
+- praktyki kadrowe i bezpieczeństwo w miejscu pracy,
+- kwestie związane z klientami, produktami i praktykami biznesowymi,
+- szkody w aktywach rzeczowych,
+- zakłócenia działalności i błędy systemów,
+- błędy w wykonywaniu i rozliczaniu transakcji.
+
+Definicja ta nie obejmuje natomiast ryzyka utraty reputacji ani ryzyka związanego
+z niewłaściwymi decyzjami strategicznymi.
+
+## Wyjaśnić, jak obecnie wyznacza się ryzyko operacyjne w bankach. Dlaczego metoda rozkładu strat (LDA) nie jest uważana za optymalną? 
+
+### Sposoby wyznaczania ryzyka operacyjnego w bankach
+
+Do zabezpieczenia przed ryzykiem operacyjnym używa się dwóch rodzajów kapitału: **kapitału regulacyjnego**, którego posiadanie przez bank jest wymagane w celu zabezpieczenia go przed tym ryzykiem, oraz **kapitału ekonomicznego**, czyli funduszy uznawanych za niezbędne do normalnego działania banku, uwzględniających jego profil ryzyka i stan kontroli.
+
+Komitet Bazylejski zaleca cztery metody wyznaczania wymogu kapitałowego z tytułu ryzyka operacyjnego:
+
+- **metoda wskaźnika bazowego (BIA)**,
+- **metoda standardowa (TSA)**,
+- **alternatywna metoda standardowa (ASA)**,
+- **metoda pomiaru zaawansowanego (AMA)**.
+
+W zasadzie to bank sam wybiera, którą metodę stosuje. Proste metody, czyli metoda wskaźnika bazowego i metoda standardowa, mogą być stosowane bez przeszkód, natomiast zgodnie z Bazyleą II metodę pomiaru zaawansowanego (AMA) mogły stosować, za zgodą regulatora, największe banki.
+
+W metodzie wskaźnika bazowego (BIA) wymóg kapitałowy oblicza się jako 15% średniej z dodatnich wyników odsetkowych netto i pozaodsetkowych netto z trzech ostatnich lat (zgodnie z dyrektywą CRD3). Metoda ta nie wymaga od banku dodatkowej pracy, takiej jak podzielenie swoich operacji (np. kredytów, rachunków, usług maklerskich) na osobne linie biznesowe ani budowania własnego modelu wyceny ryzyka operacyjnego. Jednocześnie skutkuje najwyższymi wymogami kapitałowymi z tytułu ryzyka operacyjnego.
+
+W metodzie standardowej (TSA) bank w pierwszym kroku przyporządkowuje swoje wyniki odsetkowe netto (czyli zysk z różnicy między odsetkami od kredytów a odsetkami od depozytów) i wyniki pozaodsetkowe netto (czyli zysk z prowizji, opłat i innych usług) z ostatnich trzech lat do ośmiu linii biznesowych (czyli wyodrębnionych obszarów działalności banku, np. bankowość detaliczna, korporacyjna, maklerska). Każdej z tych linii przypisany jest własny współczynnik wyrażający, jak bardzo dana linia jest narażona na ryzyko operacyjne. Wymóg kapitałowy stanowi sumę wyników z poszczególnych linii pomnożonych przez ich współczynniki.
+
+W alternatywnej metodzie standardowej (ASA) dla dwóch linii biznesowych, czyli bankowości detalicznej i komercyjnej, wskaźnik liczy się inaczej: nie z zysku, lecz z wolumenu kredytów (czyli łącznej wartości wszystkich kredytów udzielonych przez bank w danej linii).
+
+W metodzie pomiaru zaawansowanego (AMA) bank korzysta z własnego modelu, który oblicza VaR (ang. Value at Risk, czyli wartość zagrożona) dla ryzyka operacyjnego. Najczęstsze założenie tych modeli jest takie, że dane historyczne o stratach operacyjnych najlepiej przewidują przyszłe straty.
+
+W ramach AMA najczęściej używa się trzech modeli: modelu danych historycznych, modelu wariancji-kowariancji oraz modelu rozkładu strat (LDA, ang. Loss Distribution Approach). Według literatury najlepsze wyniki daje LDA i to jego wariacje są w praktyce najczęściej stosowane przez banki.
+
+Wymagany kapitał wyznacza się na podstawie **OpVaR** (Operational Value at Risk, czyli operacyjna wartość narażona na ryzyko). OpVaR to maksymalna strata, jakiej bank może doświadczyć w określonym czasie (najczęściej 1 rok) z zadanym prawdopodobieństwem (najczęściej 99,9%).
+
+Pomiar OpVaR przeprowadza się osobno dla 56 obszarów ryzyka, czyli dla każdej z 8 linii biznesowych pomnożonej przez 7 kategorii zdarzeń operacyjnych (8 × 7 = 56).
+
+W modelu LDA dla każdego obszaru, na podstawie danych historycznych, szacuje się dwa rozkłady: **rozkład częstości** (czyli jak często zdarzają się straty w danym okresie, np. w ciągu roku) oraz **rozkład dotkliwości** (czyli jak duża jest pojedyncza strata). Wynik końcowy otrzymuje się dzięki **symulacji Monte Carlo** (czyli losowemu wielokrotnemu generowaniu możliwych scenariuszy strat na podstawie tych rozkładów).
+
+Wybór konkretnego rozkładu częstości (Poissona, dwumianowego lub ujemnego dwumianowego) oraz rozkładu dotkliwości (np. logarytmiczno-normalnego, wykładniczego, Weibulla czy Pareto) powinien odbywać się na podstawie testów statystycznych sprawdzających, jak dobrze dany rozkład pasuje do danych empirycznych. Najczęściej stosuje się test chi-kwadrat Pearsona, test Kolmogorowa-Smirnowa i test Andersona-Darlinga.
+
+### Dlaczego metoda LDA nie jest uważana za optymalną
+
+Podstawową wadą LDA jest oparcie się na danych historycznych, a same dane stwarzają wiele problemów: są mało dostępne, słabo przejrzyste, niespójne (różne banki rejestrują je inaczej), mają wysokie progi raportowania (czyli rejestrowane są tylko straty powyżej pewnej kwoty, mniejsze są pomijane) i bywają raportowane z opóźnieniem.
+
+Z uwagi na krótką historię badań nad zdarzeniami operacyjnymi banki nie posiadają bogatych baz danych, w związku z czym powinny korzystać z danych zewnętrznych (czyli pochodzących z innych banków lub publicznych baz danych).
+
+Korzystanie z zewnętrznych baz wymaga jednak przeskalowania wysokości strat do skali działalności banku (bo ta sama strata, np. 1 mln zł, oznacza co innego dla małego, a co innego dla bardzo dużego banku) i wiąże się z dalszymi problemami: publicznie wykazuje się tylko odpowiednio wysokie straty (tzw. problem minimalnych strat: małe straty nie trafiają do baz danych), a same dane bywają niejednorodne, ponieważ częstotliwość strat może wynikać z różnego poziomu jakości procedur stosowanych w różnych bankach.
+
+Brakuje też informacji z tzw. ogonów rozkładu (czyli o stratach najmniej prawdopodobnych, ale najbardziej dotkliwych), które przy wyznaczaniu OpVaR na poziomie 99,9% mają największy wpływ na wynik.
+
+Już na etapie modelowania trzeba odpowiedzieć na wiele trudnych pytań: jak łączyć dane wewnętrzne (czyli własne dane banku) z zewnętrznymi (z innych banków), jak postępować, gdy bank zbiera tylko straty przekraczające pewien minimalny próg (np. ignoruje straty poniżej 10 tys. zł), oraz jak szacować częstość strat, gdy korzysta się z różnych rodzajów danych.
+
+Kolejną trudnością jest dość zaawansowana matematyka, w szczególności konieczność modelowania powiązań (korelacji, czyli wzajemnych zależności) między czynnikami ryzyka. Otwarte pozostaje wreszcie pytanie, na ile zbudowany model jest wiarygodny i w jaki sposób można sprawdzić jego poprawność (czyli go testować).
+
+W obliczu braków danych jako obejście stosuje się analizę scenariuszową (czyli oszacowanie ekspertów: bankowy Komitet ds. ryzyka operacyjnego sam określa, jak często i jak dotkliwe mogą być straty), co pokazuje, że LDA w czystej postaci nie wystarcza i wymaga uzupełnienia o oceny eksperckie.
+
+# Część praktyczna: model LDA
+
+## Wczytanie i opis danych
+
+Dane wejściowe znajdują się w pliku plik7.csv. Zawierają informacje o pojedynczych stratach operacyjnych, jakie poniósł bank w pewnym okresie, podzielonych na siedem linii biznesowych (czyli wyodrębnionych obszarów działalności banku lub kategorii zdarzeń ryzyka operacyjnego, np. bankowość komercyjna, oszustwa wewnętrzne czy awarie systemów). Każdy wiersz pliku opisuje jedno zdarzenie i zawiera kolumny: rok wystąpienia (rok), wysokość straty brutto oraz przypisaną linię biznesową (linia). Łącznie w pliku znajduje się 7836 zdarzeń z lat 1989-2023, sklasyfikowanych w 7 liniach biznesowych.
+
+```{r}
+dane <- read.csv("plik7.csv", stringsAsFactors = FALSE)
+dane <- dane[, c("rok", "strata", "linia")]
+```
+
+Sprawdzam ile wierszy (zdarzeń) i kolumn (zmiennych) ma zbiór:
+
+```{r}
+# liczba wierszy (zdarzeń) i kolumn (zmiennych)
+dim(dane)
+```
+
+Podgląd pierwszych kilku wierszy:
+
+```{r}
+# pierwsze 6 wierszy zbioru
+head(dane)
+```
+
+**Sprawdzenie jakości danych** (brakujące wartości, ujemne lub zerowe straty, duplikaty, kompletność lat):
+
+```{r}
+# czy są brakujące wartości w jakiejkolwiek kolumnie
+sum(is.na(dane))
+
+# czy są ujemne lub zerowe straty
+sum(dane$strata <= 0)
+
+# czy są duplikaty wierszy
+sum(duplicated(dane))
+
+# zakres lat w danych
+range(dane$rok)
+```
+
+**Wnioski:** brak NA, brak ujemnych/zerowych strat, dane obejmują 35 lat (1989-2023).
+
+**Sprawdzenie problemu progu raportowania**: bank często rejestruje tylko 
+straty powyżej pewnej minimalnej kwoty -> mniejsze pomija lub zapisuje jako 
+wartość progu. Sprawdzam, czy w moich danych jest dużo strat o tej samej 
+małej wartości.
+
+
+```{r}
+# ile strat poniżej 10, 50, 100, 500
+data.frame(
+  Próg = c("≤ 10", "≤ 50", "≤ 100", "≤ 500"),
+  Liczba = c(sum(dane$strata <= 10),
+             sum(dane$strata <= 50),
+             sum(dane$strata <= 100),
+             sum(dane$strata <= 500))
+)
+```
+
+```{r}
+# ile strat = 10 w każdej z 7 linii
+dane %>%
+  group_by(linia) %>%
+  summarise(
+    strat_rownych_10 = sum(strata == 10),
+    procent_lini = round(100 * sum(strata == 10) / n(), 1)
+  )
+```
+
+**Wniosek:** problem progu raportowania występuje głównie w dwóch liniach: 
+`Internal_Fr` (834 strat o wartości 10, czyli 29,9% linii) i `Damage` 
+(180 strat = 10, czyli 53,7% linii). Pozostałe pięć linii (`Buss_Distr`, 
+`Com_Ban`, `Empl_Pract`, `Execut_Del`, `External_Fr`) ma 0 lub pojedyncze 
+takie obserwacje.
+
+```{r}
+# grupuję dane po linii biznesowej i liczę podstawowe statystyki dla każdej z 7 linii
+podsumowanie <- dane %>%
+  group_by(linia) %>%
+  summarise(
+    liczba_zdarzen = n(),                  # ile zdarzeń w danej linii (ile razy wystąpiła strata operacyjna)
+    suma_strat = sum(strata),              # suma wszystkich strat
+    srednia_strata = mean(strata),         # średnia wartość pojedynczej straty
+    mediana_strata = median(strata),       # mediana strat
+    max_strata = max(strata)               # największa pojedyncza strata
+  ) %>%
+  arrange(desc(liczba_zdarzen))            # malejąco po liczbie zdarzeń
+
+kable(podsumowanie, digits = 2, caption = "Podsumowanie wszystkich linii biznesowych") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+Z tabeli widać, że **linie biznesowe bardzo się od siebie różnią**. W `Internal_Fr` (2786 zdarzeń) i `Execut_Del` (1037) zdarzeń jest najwięcej, ale są to zwykle bardzo małe straty (średnio około 3 tys.). Linia `Empl_Pract` ma zarówno dużo zdarzeń (2103), jak i wyraźnie większe straty (średnio około 23 tys.). Z kolei `Com_Ban` (797 zdarzeń) i `Buss_Distr` (298) mają mniej zdarzeń, za to każde z nich jest średnio jeszcze większe (około 37 tys. i 28 tys.). Najwyższa pojedyncza strata wystąpiła w `Internal_Fr` (766 490), a kolejne duże maksymalne wartości w `Com_Ban` (348 688) i `Damage` (318 302).
+
+### Wybór dwóch linii biznesowych do analizy
+
+Polecenie zadania pozwala wybrać dowolne dwie linie biznesowe spośród siedmiu dostępnych w pliku. Do dalszej analizy LDA wybieram:
+
+- **Buss_Distr** (Business Disruption): zakłócenia działalności i awarie systemów. **Linia o najmniejszej liczbie zdarzeń w całym pliku** (298), ze średnią stratą około 28 tys.
+- **Com_Ban** (Commercial Banking): bankowość komercyjna. Linia z 797 zdarzeniami i **najwyższą średnią stratą spośród wszystkich linii w pliku** (~37 tys.).
+
+```{r}
+# dwie linie biznesowe do dalszej analizy LDA
+linia1 <- "Buss_Distr"
+linia2 <- "Com_Ban"
+
+# osobne podzbiory danych dla każdej z dwóch wybranych linii
+dane_L1 <- dane %>% filter(linia == linia1)
+dane_L2 <- dane %>% filter(linia == linia2)
+
+# tabela ile mam zdarzeń w każdej z wybranych linii
+wybrane_linie <- data.frame(
+  Linia = c(linia1, linia2),
+  Liczba_zdarzen = c(nrow(dane_L1), nrow(dane_L2))
+)
+
+kable(wybrane_linie,
+      caption = "Wybrane linie biznesowe",
+      col.names = c("Linia", "Liczba zdarzeń")) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+## Analiza eksploracyjna (EDA)
+
+### Częstotliwość strat operacyjnych
+
+Częstotliwość odpowiada na pytanie: **ile strat zdarzało się rocznie** w każdej z wybranych linii. Te roczne liczby zdarzeń posłużą później do oszacowania parametrów rozkładu częstości, z którego w symulacji Monte Carlo będę losowała liczbę zdarzeń w każdym z 10 000 zsymulowanych lat.
+
+```{r}
+# liczę ile zdarzeń wystąpiło w każdym roku dla linii 1
+licznosci_L1 <- dane_L1 %>%
+  group_by(rok) %>%
+  summarise(N = n()) %>%   # N = liczba zdarzeń w danym roku
+  arrange(rok)
+
+# to samo dla linii 2
+licznosci_L2 <- dane_L2 %>%
+  group_by(rok) %>%
+  summarise(N = n()) %>%
+  arrange(rok)
+
+# oba liczniki w jedną tabelę
+licznosci_pokaz <- merge(licznosci_L1, licznosci_L2,
+                         by = "rok", suffixes = c(".L1", ".L2"))
+colnames(licznosci_pokaz) <- c("Rok", linia1, linia2)
+
+# tabela z wynikami
+kable(licznosci_pokaz, caption = "Liczba zdarzeń w każdym roku") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE) %>%
+  scroll_box(height = "300px")
+```
+
+```{r}
+# podstawowe statystyki rocznej liczby zdarzeń dla obu linii
+statystyki_czestosc <- data.frame(
+  Linia = c(linia1, linia2),
+  Srednia = c(mean(licznosci_L1$N), mean(licznosci_L2$N)),     # średnia liczba zdarzeń na rok (ile razy wystąpiła strata operacyjna)
+  Wariancja = c(var(licznosci_L1$N), var(licznosci_L2$N)),     # wariancja liczby zdarzeń
+  Min = c(min(licznosci_L1$N), min(licznosci_L2$N)),           # najmniejsza liczba zdarzeń w roku
+  Max = c(max(licznosci_L1$N), max(licznosci_L2$N))            # największa liczba zdarzeń w roku
+)
+
+# tabela z wynikami
+kable(statystyki_czestosc, digits = 3,
+      caption = "Statystyki rocznej liczby zdarzeń",
+      col.names = c("Linia", "Średnia", "Wariancja", "Min", "Max")) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Wyniki:**
+
+- W linii **`Buss_Distr`** zdarzeń jest niewiele: średnio **~8,5 rocznie** 
+(od 3 w najspokojniejszych latach do 19 w 2021).
+- Linia **`Com_Ban`** jest znacznie aktywniejsza: średnio **~22,8 zdarzeń rocznie** 
+(od 9 w 1996 do 45 w 2023, czyli ostatni rok jest wyraźnie odstający).
+- Przy doborze rozkładu częstości pomocne jest **porównanie średniej i wariancji z próby** (reguła z wykładu):
+
+| Relacja | Pasujący rozkład |
+|---|---|
+| EX > D²X (średnia > wariancja) | **dwumianowy** |
+| EX = D²X (średnia = wariancja) | **Poisson** |
+| EX < D²X (średnia < wariancja) | **ujemny dwumianowy** |
+
+- W obu liniach **wariancja jest większa od średniej** (10,49 > 8,51 dla `Buss_Distr`
+i 40,59 > 22,77 dla `Com_Ban`) -> czyli **EX < D²X**. Wybieram
+w obu liniach **rozkład ujemny dwumianowy** i weryfikuję jego dopasowanie formalnie
+testem chi² (który działa dla danych dyskretnych -> liczb całkowitych jak liczba
+zdarzeń w roku) w następnej sekcji.
+
+
+Robię wykres rocznej liczby zdarzeń w czasie, żeby zobaczyć, czy częstotliwość strat jest w miarę stabilna z roku na rok, czy może rośnie albo spada, oraz czy są lata wyjątkowo złe.
+
+```{r fig.height=4}
+# dane obu linii w jedną tabelę  (dla ggplota)
+licznosci_long <- rbind(
+  data.frame(rok = licznosci_L1$rok, N = licznosci_L1$N, linia = linia1),
+  data.frame(rok = licznosci_L2$rok, N = licznosci_L2$N, linia = linia2)
+)
+
+# wykres liniowy: oś X = rok, oś Y = liczba zdarzeń, kolor = linia biznesowa
+ggplot(licznosci_long, aes(x = rok, y = N, color = linia)) +
+  geom_line(linewidth = 0.8) +    
+  geom_point(size = 2) +           
+  labs(title = "Roczna liczba zdarzeń w wybranych liniach biznesowych",
+       x = "Rok", y = "Liczba zdarzeń (N)", color = "Linia") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(1989, 2023, by = 2)) +
+  scale_y_continuous(breaks = seq(0, 50, by = 5)) +
+  scale_color_manual(values = c("lightblue", "lightpink"))
+```
+
+**Wyniki wykresu:**
+
+- W obu liniach liczba zdarzeń mocno zmienia się z roku na rok, nie ma stabilnego poziomu.
+- `Buss_Distr` waha się w przedziale od 3 do 19 zdarzeń rocznie (wyraźny skok w 2021).
+- `Com_Ban` jest dużo bardziej rozproszona: od 9 do 45 zdarzeń, z wyraźnym dużym skokiem w 2023.
+- Nie widać jednoznacznego trendu rosnącego ani spadkowego, ale **zmienność jest duża** w obu liniach.
+
+
+### Dotkliwość strat operacyjnych
+
+W tej sekcji patrzę na **wysokość pojedynczej straty** w obu liniach. Polecenie wymaga, żeby dobrać rozkład dotkliwości i sugeruje, że tam, gdzie testy nie pozwalają na sensowną weryfikację, trzeba dobrać **rozkład lognormalny**. Sprawdzam więc statystyki opisowe oraz kształt rozkładu pojedynczych strat (zwykły i po zlogarytmowaniu) -> jeśli log(strata) ma kształt dzwonowy (zbliżony do normalnego), to oryginalne straty mają rozkład lognormalny.
+
+```{r}
+# funkcja do liczenia skośności
+# skośność > 0 rozkład jest niesymetryczny (dłuższy ogon po prawej stronie)
+skosnosc <- function(x) mean((x - mean(x))^3) / sd(x)^3
+
+# podstawowe statystyki opisowe wartości pojedynczej straty dla obu linii
+statystyki_strat <- data.frame(
+  Linia = c(linia1, linia2),
+  N = c(nrow(dane_L1), nrow(dane_L2)),                            # łączna liczba strat (wszystkich, nie per rok)
+  Srednia = c(mean(dane_L1$strata), mean(dane_L2$strata)),        # średnia wartość pojedynczej straty
+  Mediana = c(median(dane_L1$strata), median(dane_L2$strata)),    # mediana
+  Odch_std = c(sd(dane_L1$strata), sd(dane_L2$strata)),           # odchylenie standardowe 
+  Min = c(min(dane_L1$strata), min(dane_L2$strata)),              # najmniejsza pojedyncza strata
+  Max = c(max(dane_L1$strata), max(dane_L2$strata)),              # największa pojedyncza strata
+  Suma = c(sum(dane_L1$strata), sum(dane_L2$strata)),             # suma wszystkich strat
+  Skosnosc = c(skosnosc(dane_L1$strata), skosnosc(dane_L2$strata)) # skośność (asymetria rozkładu)
+)
+
+# tabela z wynikami
+kable(statystyki_strat, digits = 2,
+      caption = "Statystyki dotkliwości strat") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Wyniki tabeli:**
+
+- W linii **`Buss_Distr`** mam **298 strat**, średnia ~28 000, mediana ~19 200, max ~139 280.
+- W linii **`Com_Ban`** mam **797 strat**, średnia ~37 000, mediana ~24 670, max ~348 690.
+- W obu liniach **mediana < średnia** (19 200 < 28 000 oraz 24 670 < 37 000), co oznacza że są pojedyncze duże straty, które ciągną średnią w górę. To samo widać w **skośności > 0** (1,46 dla `Buss_Distr` i 2,97 dla `Com_Ban`) rozkład jest niesymetryczny, z dłuższym ogonem po prawej stronie.
+- W kolumnie **`Max`** `Com_Ban` ma ~348 690, a `Buss_Distr` ~139 280 czyli największa pojedyncza strata w `Com_Ban` jest ponad **2,5× wyższa**. W kolumnie **`Odch_std`** `Com_Ban` (~39 500) też ma większe odchylenie niż `Buss_Distr` (~26 880), czyli pojedyncze straty w `Com_Ban` bardziej różnią się od średniej.
+
+Robię histogram pojedynczych strat w skali zwykłej, żeby zobaczyć, jak rozłożone są kwoty strat.
+
+```{r fig.width=11, fig.height=4}
+# 2 histogramy = rozkład pojedynczych strat
+par(mfrow = c(1, 2))
+# histogram strat dla linii 1 (30 słupków)
+hist(dane_L1$strata, breaks = 30, col = "lightblue", border = "white",
+     main = paste("Rozkład wysokości pojedynczych strat:", linia1),
+     xlab = "Wysokość pojedynczej straty", ylab = "Liczba przypadków")
+# histogram strat dla linii 2 (50 słupków, bo strat jest więcej)
+hist(dane_L2$strata, breaks = 50, col = "lightpink", border = "white",
+     main = paste("Rozkład wysokości pojedynczych strat:", linia2),
+     xlab = "Wysokość pojedynczej straty", ylab = "Liczba przypadków")
+par(mfrow = c(1, 1))
+```
+
+**Wyniki histogramu (skala zwykła):**
+
+- W obu liniach widać ten sam kształt: **najwięcej jest małych strat** (najwyższe słupki przy lewej krawędzi, blisko zera), a **liczba strat maleje wraz ze wzrostem kwoty**. Pojedyncze bardzo wysokie straty (długi prawy ogon) są rzadkie.
+- **W tej skali ciężko ocenić, czy ten kształt pasuje do konkretnego rozkładu** dlatego niżej robię histogram po zlogarytmowaniu kwot.
+
+
+
+Rozkład lognormalny jest tak zdefiniowany, że po zlogarytmowaniu jego wartości wychodzi **rozkład normalny** (kształt dzwonu). Działa to też w drugą stronę: jeśli po zlogarytmowaniu moich strat histogram wygląda jak dzwon, to znaczy, że oryginalne straty miały rozkład lognormalny. To wizualne sprawdzenie tego założenia, zanim formalnie dopasuję rozkład w następnej sekcji.
+
+```{r fig.width=12, fig.height=4}
+# te same histogramy ale po zlogarytmowaniu wartości strat (log naturalny)
+par(mfrow = c(1, 2))
+
+# linia 1
+h_L1 <- hist(log(dane_L1$strata), breaks = 25, col = "lightblue", border = "white",
+     main = paste("Rozkład log(wysokości straty):", linia1),
+     xlab = "log(wysokość straty)", ylab = "Liczba przypadków",
+     yaxt = "n")
+
+axis(2, at = seq(0, max(h_L1$counts) + 5, by = 5))
+
+# linia 2
+h_L2 <- hist(log(dane_L2$strata), breaks = 35, col = "lightpink", border = "white",
+     main = paste("Rozkład log(wysokości straty):", linia2),
+     xlab = "log(wysokość straty)", ylab = "Liczba przypadków",
+     yaxt = "n")
+axis(2, at = seq(0, max(h_L2$counts) + 5, by = 5))
+par(mfrow = c(1, 1))
+```
+
+**Wyniki histogramu log(wysokości straty):**
+
+- W linii **`Buss_Distr`** kształt jest **zbliżony do dzwonu**: pojedynczy szczyt przy log ≈ 10,5 (**~54 przypadki**), wartości narastają w stronę szczytu (28, 39, 47) i maleją po prawej stronie (43, 30, 9). Po lewej stronie (log ≈ 4-6) widać kilka pojedynczych obserwacji (1-3 przypadki). To są bardzo małe straty, po odlogarytmowaniu (e^4 ≈ 55, e^5 ≈ 148, e^6 ≈ 403) odpowiadają kwotom rzędu od kilkudziesięciu do kilkuset, blisko `min = 49,61` z tabeli (log(49,61) ≈ 3,9).
+- W linii **`Com_Ban`** kształt mniej przypomina rozkład normalny: nie ma jednego najwyższego słupka, tylko **cztery słupki obok siebie o niemal tej samej wysokości** (**65, 64, 63, 63 przypadków**) między log 9,3 a 9,9. Po prawej stronie wartości spadają (51, 58, 54, 34), ale potem **rosną z powrotem** przy log ≈ 11 (**46 przypadków**) i jeszcze raz mniej wyraźnie przy log ≈ 12 (**11 przypadków**). Czyli nie ma jednego wyraźnego szczytu jak w `Buss_Distr`.
+- Wniosek: w **`Buss_Distr`** kształt log-rozkładu lepiej pasuje do normalnego, w **`Com_Ban`** dopasowanie jest gorsze (brak jednego szczytu + dodatkowe wzrosty po prawej stronie wykresu). 
+
+
+## Dopasowanie rozkładu liczby zdarzeń
+
+Zgodnie z regułą z wykładu (porównanie średniej i wariancji z próby), w obu liniach wariancja jest większa od średniej (EX < D²X) —> wybieram **rozkład ujemny dwumianowy**. Ma on dwa parametry: `size` (parametr kształtu) oraz `mu` (średnia liczba zdarzeń w roku). Parametry `size` i `mu` wyznaczam za pomocą funkcji `MASS::fitdistr`.
+
+Następnie weryfikuję dopasowanie testem chi-kwadrat zgodności. Spośród trzech testów z wykładu (chi^2, Kołmogorowa-Smirnowa, Andersona-Darlinga) wybieram chi^2, bo dwa pozostałe mają zastosowanie tylko do rozkładów typu ciągłego, a liczba zdarzeń w roku to dane dyskretne (liczby całkowite). Test chi^2 porównuje ile lat faktycznie miało daną liczbę zdarzeń (obserwacja) z tym, ile lat powinno mieć tę liczbę zdarzeń, gdyby dane naprawdę pochodziły z rozkładu ujemnego dwumianowego (oczekiwanie). Hipotezy:
+
+- **H0**: dane pochodzą z rozkładu ujemnego dwumianowego.
+- **H1**: dane nie pochodzą z tego rozkładu.
+
+Jeśli **p-value > 0,05** -> brak podstaw do odrzucenia H0 (rozkład pasuje). Jeśli **p-value < 0,05** -> odrzucam H0 (rozkład nie pasuje).
+
+### Linia 1: `r linia1`
+
+```{r}
+# dopasowuję rozkład ujemny dwumianowy do moich danych (liczba zdarzeń w kolejnych latach Buss_Distr)
+# fitdistr sama szuka najlepszych parametrów size i mu które najlepiej pasują do moich danych
+fit_NB_L1 <- fitdistr(licznosci_L1$N, "negative binomial")
+size_L1  <- fit_NB_L1$estimate["size"]   # parametr kształtu
+mu_L1_NB <- fit_NB_L1$estimate["mu"]     # średnia rozkładu
+
+# wariancja teoretyczna ujemnego dwumianowego: var = mu + mu^2/size
+var_model_L1 <- mu_L1_NB + mu_L1_NB^2 / size_L1
+
+# dane do dalszych obliczeń
+N_obs <- licznosci_L1$N        # wektor: ile zdarzeń wystąpiło w każdym roku
+n_lat <- length(N_obs)         # ile lat danych mam w sumie (ok 35)
+
+# liczę obserwowane -> ile lat miało daną liczbę zdarzeń
+obs_counts <- as.numeric(table(factor(N_obs, levels = 0:max(N_obs))))
+
+# liczę oczekiwane prawdopodobieństwa z dopasowanego rozkładu
+exp_probs <- dnbinom(0:max(N_obs), size = size_L1, mu = mu_L1_NB)
+
+# do ostatniego przedziału dorzucam prawy ogon (P(N>max))
+# bo te prawdopodobieństwa sumują się tylko do ~0,90 (rozkład może mieć wartości większe niż max)
+# a chisq.test wymaga sumy = 1 więc brakujące 0,10 wpisuję w ostatni przedział
+exp_probs[length(exp_probs)] <- 1 - sum(exp_probs[-length(exp_probs)])
+
+# prawdopodobieństwa na liczby lat (oczekiwane wg modelu)
+exp_counts <- exp_probs * n_lat
+
+# łączę skrajne małe przedziały z sąsiadami bo test chi^2 wymaga żeby
+# każdy przedział miał co najmniej 5 oczekiwanych obserwacji. łączę od skrajów
+# do środka bo to skraje mają mało danych (rozkład ma tam małe prawdopodobieństwa), a środek chcę zachować nietknięty
+while (length(exp_counts) > 2 && exp_counts[1] < 5) {
+  exp_counts[2] <- exp_counts[2] + exp_counts[1]; obs_counts[2] <- obs_counts[2] + obs_counts[1]
+  exp_counts <- exp_counts[-1]; obs_counts <- obs_counts[-1]
+}
+while (length(exp_counts) > 2 && exp_counts[length(exp_counts)] < 5) {
+  L <- length(exp_counts)
+  exp_counts[L-1] <- exp_counts[L-1] + exp_counts[L]; obs_counts[L-1] <- obs_counts[L-1] + obs_counts[L]
+  exp_counts <- exp_counts[-L]; obs_counts <- obs_counts[-L]
+}
+
+# test chi^2
+# porównuje moje obserwowane liczebności z oczekiwanymi (wg modelu)
+test_chi2_L1 <- chisq.test(obs_counts, p = exp_counts / sum(exp_counts))
+chi2_stat_L1 <- as.numeric(test_chi2_L1$statistic)   # wartość statystyki
+
+# stopnie swobody (df)
+# df = liczba przedziałów - 1 - liczba szacowanych parametrów (size i mu = 2)
+df_chi2_L1 <- length(obs_counts) - 1 - 2
+
+# liczę p-value sama bo chisq.test() w R używa wzoru: df = liczba przedziałów - 1
+# ale ten wzór działa tylko jeśli prawdopodobieństwa pochodzą z gotowego z góry znanego rozkładu
+# u mnie prawdopodobieństwa pochodzą z rozkładu, którego parametry sama oszacowałam (size i mu)
+# za każdy oszacowany parametr trzeba odjąć od df dodatkowo 1
+# poprawny wzór: df = liczba przedziałów - 1 - 2
+# pchisq() liczy p-value przy moim poprawnym df
+p_chi2_L1 <- pchisq(chi2_stat_L1, df = df_chi2_L1, lower.tail = FALSE)
+
+# tabela
+wynik_L1 <- data.frame(
+  Wielkosc = c("Estymowany size (parametr kształtu)", "Estymowane mu (średnia liczba zdarzeń w roku)",
+               "Wariancja przewidywana przez model (μ + μ²/size)",
+               "Statystyka chi-kwadrat", "Stopnie swobody", "p-value"),
+  Wartosc  = c(liczba(size_L1), liczba(mu_L1_NB), liczba(var_model_L1),
+               liczba(chi2_stat_L1), as.character(df_chi2_L1), liczba(p_chi2_L1))
+)
+
+kable(wynik_L1, col.names = c("Wielkość", "Wartość"),
+      caption = paste("Test zgodności z rozkładem ujemnym dwumianowym:", linia1)) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Wyniki (Buss_Distr):**
+
+- Estymowane parametry: **size = 46,5409**, **mu = 8,5143** (czyli rozkład ujemny dwumianowy ze średnią ~8,5 zdarzeń rocznie).
+- **Wariancja przewidywana przez model = 10,0719** (ze wzoru μ + μ²/size). Wartość ta jest bardzo bliska wariancji z danych (10,49 z tabeli EDA) -> model dobrze odzwierciedla rozrzut moich danych.
+- Statystyka chi² = **7,5670**, stopnie swobody = **5**, p-value = **0,1818**.
+- **Decyzja:** p-value 0,1818 > 0,05 -> **brak podstaw do odrzucenia H0**. Czyli rozkład ujemny dwumianowy pasuje do danych `Buss_Distr`, biorę go do dalszej analizy.
+
+
+### Linia 2: `r linia2`
+
+```{r}
+# dopasowuję rozkład ujemny dwumianowy do moich danych (liczba zdarzeń w kolejnych latach Com_Ban)
+# fitdistr sama szuka najlepszych parametrów size i mu które najlepiej pasują do moich danych
+fit_NB_L2 <- fitdistr(licznosci_L2$N, "negative binomial")
+size_L2  <- fit_NB_L2$estimate["size"]   # parametr kształtu
+mu_L2_NB <- fit_NB_L2$estimate["mu"]     # średnia rozkładu
+
+# wariancja teoretyczna ujemnego dwumianowego: var = mu + mu^2/size
+var_model_L2 <- mu_L2_NB + mu_L2_NB^2 / size_L2
+
+# dane do dalszych obliczeń
+N_obs <- licznosci_L2$N        # wektor: ile zdarzeń wystąpiło w każdym roku
+n_lat <- length(N_obs)         # ile lat danych mam w sumie (ok 35)
+
+# liczę obserwowane -> ile lat miało daną liczbę zdarzeń
+obs_counts <- as.numeric(table(factor(N_obs, levels = 0:max(N_obs))))
+
+# liczę oczekiwane prawdopodobieństwa z dopasowanego rozkładu
+exp_probs <- dnbinom(0:max(N_obs), size = size_L2, mu = mu_L2_NB)
+
+# do ostatniego przedziału dorzucam prawy ogon (P(N>max))
+# bo te prawdopodobieństwa sumują się tylko do ~0,90 (rozkład może mieć wartości większe niż max)
+# a chisq.test wymaga sumy = 1 więc brakujące 0,10 wpisuję w ostatni przedział
+exp_probs[length(exp_probs)] <- 1 - sum(exp_probs[-length(exp_probs)])
+
+# prawdopodobieństwa na liczby lat (oczekiwane wg modelu)
+exp_counts <- exp_probs * n_lat
+
+# łączę skrajne małe przedziały z sąsiadami bo test chi^2 wymaga żeby
+# każdy przedział miał co najmniej 5 oczekiwanych obserwacji. łączę od skrajów
+# do środka bo to skraje mają mało danych (rozkład ma tam małe prawdopodobieństwa), a środek chcę zachować nietknięty
+while (length(exp_counts) > 2 && exp_counts[1] < 5) {
+  exp_counts[2] <- exp_counts[2] + exp_counts[1]; obs_counts[2] <- obs_counts[2] + obs_counts[1]
+  exp_counts <- exp_counts[-1]; obs_counts <- obs_counts[-1]
+}
+while (length(exp_counts) > 2 && exp_counts[length(exp_counts)] < 5) {
+  L <- length(exp_counts)
+  exp_counts[L-1] <- exp_counts[L-1] + exp_counts[L]; obs_counts[L-1] <- obs_counts[L-1] + obs_counts[L]
+  exp_counts <- exp_counts[-L]; obs_counts <- obs_counts[-L]
+}
+
+# test chi^2
+# porównuje moje obserwowane liczebności z oczekiwanymi (wg modelu)
+test_chi2_L2 <- chisq.test(obs_counts, p = exp_counts / sum(exp_counts))
+chi2_stat_L2 <- as.numeric(test_chi2_L2$statistic)   # wartość statystyki
+
+# stopnie swobody (df)
+# df = liczba przedziałów - 1 - liczba szacowanych parametrów (size i mu = 2)
+df_chi2_L2 <- length(obs_counts) - 1 - 2
+
+# liczę p-value sama bo chisq.test() w R używa wzoru: df = liczba przedziałów - 1
+# ale ten wzór działa tylko jeśli prawdopodobieństwa pochodzą z gotowego z góry znanego rozkładu
+# u mnie prawdopodobieństwa pochodzą z rozkładu, którego parametry sama oszacowałam (size i mu)
+# za każdy oszacowany parametr trzeba odjąć od df dodatkowo 1
+# poprawny wzór: df = liczba przedziałów - 1 - 2
+# pchisq() liczy p-value przy moim poprawnym df
+p_chi2_L2 <- pchisq(chi2_stat_L2, df = df_chi2_L2, lower.tail = FALSE)
+
+# tabela
+wynik_L2 <- data.frame(
+  Wielkosc = c("Estymowany size (parametr kształtu)", "Estymowane mu (średnia liczba zdarzeń w roku)",
+               "Wariancja przewidywana przez model (μ + μ²/size)",
+               "Statystyka chi-kwadrat", "Stopnie swobody", "p-value"),
+  Wartosc  = c(liczba(size_L2), liczba(mu_L2_NB), liczba(var_model_L2),
+               liczba(chi2_stat_L2), as.character(df_chi2_L2), liczba(p_chi2_L2))
+)
+
+kable(wynik_L2, col.names = c("Wielkość", "Wartość"),
+      caption = paste("Test zgodności z rozkładem ujemnym dwumianowym:", linia2)) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Wyniki (Com_Ban):**
+
+- Estymowane parametry: **size = 33,6092**, **mu = 22,7714** (czyli rozkład ujemny dwumianowy ze średnią ~22,8 zdarzeń rocznie).
+- **Wariancja przewidywana przez model = 38,1999** (ze wzoru μ + μ²/size). Wartość ta jest bardzo bliska wariancji z danych (40,59 z tabeli EDA, różnica ~6%) -> model dobrze odzwierciedla rozrzut moich danych.
+- Statystyka chi² = **14,4134**, stopnie swobody = **11**, p-value = **0,2110**.
+- **Decyzja:** p-value 0,2110 > 0,05 -> **brak podstaw do odrzucenia H0**. Czyli rozkład ujemny dwumianowy pasuje do danych `Com_Ban`, biorę go do dalszej analizy.
+
+
+**Końcowe parametry do symulacji Monte Carlo:**
+
+- `Buss_Distr`: size = **46,5409**, mu = **8,5143** (p = 0,1818, ujemny dwumianowy pasuje)
+- `Com_Ban`: size = **33,6092**, mu = **22,7714** (p = 0,2110, ujemny dwumianowy pasuje)
+
+Wartości (size i mu) idą do symulacji Monte Carlo. Zanim to zrobię, chcę jeszcze **zobaczyć na wykresie**, czy mój dopasowany rozkład wygląda podobnie do moich danych. 
+
+```{r fig.width=15, fig.height=5}
+par(mfrow = c(1, 2))
+
+# Linia 1 -> Buss_Distr 
+xs1 <- min(licznosci_L1$N):max(licznosci_L1$N)
+brk1 <- seq(min(xs1)-0.5, max(xs1)+0.5, by = 1)
+n_lat_L1 <- nrow(licznosci_L1)
+h1 <- hist(licznosci_L1$N, breaks = brk1, plot = FALSE)
+ymax1 <- max(c(h1$counts, dnbinom(xs1, size = size_L1, mu = mu_L1_NB) * n_lat_L1)) * 1.25
+hist(licznosci_L1$N, breaks = brk1,
+     col = "lightblue", border = "white",
+     ylim = c(0, ymax1),
+     main = paste("Rzeczywiste dane vs model ujemnego dwumianowego:", linia1),
+     xlab = "Liczba zdarzeń w roku", ylab = "Liczba lat")
+
+# linia teoretyczna 
+points(xs1, dnbinom(xs1, size = size_L1, mu = mu_L1_NB) * n_lat_L1, col = "red", pch = 19, cex = 1.2)
+lines(xs1, dnbinom(xs1, size = size_L1, mu = mu_L1_NB) * n_lat_L1, col = "red", lwd = 2)
+legend("topright", legend = c("Rzeczywista liczba lat (z danych)", "Liczba lat wg modelu (ujemny dwumianowy)"),
+       fill = c("lightblue", NA), border = c("white", NA),
+       pch = c(NA, 19), col = c(NA, "red"), bty = "n", cex = 0.8)
+
+# Linia 2 -> Com_Ban 
+xs2 <- min(licznosci_L2$N):max(licznosci_L2$N)
+brk2 <- seq(min(licznosci_L2$N)-0.5, max(licznosci_L2$N)+2.5, by = 2)
+n_lat_L2 <- nrow(licznosci_L2)
+h2 <- hist(licznosci_L2$N, breaks = brk2, plot = FALSE)
+ymax2 <- max(c(h2$counts, dnbinom(xs2, size = size_L2, mu = mu_L2_NB) * n_lat_L2 * 2)) * 1.25
+hist(licznosci_L2$N, breaks = brk2,
+     col = "lightpink", border = "white",
+     ylim = c(0, ymax2),
+     xlim = c(min(xs2)-1, max(xs2)+2),
+     xaxt = "n",
+     main = paste("Rzeczywiste dane vs model ujemnego dwumianowego:", linia2),
+     xlab = "Liczba zdarzeń w roku", ylab = "Liczba lat")
+axis(1, at = seq(10, 45, by = 5))
+points(xs2, dnbinom(xs2, size = size_L2, mu = mu_L2_NB) * n_lat_L2 * 2, col = "darkblue", pch = 19, cex = 1.2)
+lines(xs2, dnbinom(xs2, size = size_L2, mu = mu_L2_NB) * n_lat_L2 * 2, col = "darkblue", lwd = 2)
+legend("topright", legend = c("Rzeczywista liczba lat (z danych)", "Liczba lat wg modelu (ujemny dwumianowy)"),
+       fill = c("lightpink", NA), border = c("white", NA),
+       pch = c(NA, 19), col = c(NA, "darkblue"), bty = "n", cex = 0.8)
+
+par(mfrow = c(1, 1))
+```
+
+**Wyniki wykresów:**
+
+- **Najwyższy słupek danych (empiryczny -> z rzeczywistych danych (35 lat)) i najwyższy punkt krzywej z dopasowanego rozkładu wypadają blisko siebie** w obu liniach. Dla `Buss_Distr`: najwyższy słupek 
+przy 9 zdarzeniach (~8 lat), krzywa rozkładu jest najwyższa przy 8 (czyli przy 
+średniej mu = 8,51). Dla `Com_Ban`: najwyższe słupki przy 19-20 i 25-26 (~6 lat), krzywa rozkładu jest najwyższa przy 22 (przy średniej mu = 22,77). Czyli **góra krzywej z modelu trafia tam, gdzie najczęściej są dane**.
+
+- **Niektóre słupki danych są wyższe niż krzywa z modelu** (np. dla `Buss_Distr` 
+słupek przy 9 ma ~8 lat, a krzywa przewiduje ~4 lata (tyle lat powinno mieć 9 zdarzeń wg rozkładu); dla `Com_Ban` słupki przy 19-20 i 25-26 mają po ~6 lat, a krzywa ~4,5). Mam jednak małą próbę: 35 lat 
+skupia się w niewielu miejscach, więc niektóre słupki są wysokie, a inne są niskie. 
+Krzywa z modelu pokazuje, do czego rozkład zmierza **przy nieskończonej próbie** -> przy większej liczbie lat słupki wygładziłyby się do krzywej.
+
+- **Średnia i wariancja danych zgadzają się bardzo dobrze z modelem** (porównuję 
+średnią/wariancję empiryczną z tabeli EDA z parametrami mu i wariancją modelu z 
+tabel testu chi² powyżej):
+  - `Buss_Distr`: średnia 8,51 (dane) vs 8,51 (model), wariancja 10,49 vs 10,07 (różnica 4%).
+  - `Com_Ban`: średnia 22,77 vs 22,77, wariancja 40,59 vs 38,20 (różnica 6%).
+
+To są dwa najważniejsze parametry rozkładu i one dobrze się zgadzają, mimo że 
+słupki na wykresie mają nierówne wysokości (raz wyższe, raz niższe niż krzywa).
+
+- **Widać też pojedyncze odstające obserwacje**: słupek przy 19 dla `Buss_Distr` 
+(rok 2021, 1 rok) oraz przy 45 dla `Com_Ban` (rok 2023, 1 rok) - oba wyraźnie 
+poza głównym kształtem rozkładu.
+
+- **Mimo widocznych różnic w wysokościach słupków, test chi² formalnie nie odrzuca 
+rozkładu ujemnego dwumianowego** (p = 0,18 dla `Buss_Distr` i p = 0,21 dla `Com_Ban`). 
+
+
+## Dopasowanie rozkładu dotkliwości strat
+
+Do modelowania dotkliwości strat operacyjnych w praktyce banki stosują różne rozkłady ciągłe, m.in. logarytmiczno-normalny, wykładniczy, Weibulla, Pareto i wartości ekstremalnych. W tej sekcji zaczynam od dopasowania **rozkładu logarytmiczno-normalnego** osobno dla każdej z linii. Następnie w osobnej podsekcji porównuję jakość tego dopasowania z innymi rozkładami i na podstawie wyników wybieram finalny rozkład dla każdej linii.
+
+Parametry rozkładów szacuję funkcją `fitdistr()` z pakietu MASS. Zgodność dopasowania z danymi sprawdzam **testem Kołmogorowa-Smirnowa**, który ma zastosowanie do rozkładów typu ciągłego.
+
+### Linia 1: `r linia1`
+
+```{r}
+# dopasowuję rozkład lognormalny do danych o stratach
+
+fit_LN_L1 <- fitdistr(dane_L1$strata, "lognormal")
+# wyciągam estymowane parametry: mu (średnia logarytmu) i sigma (odchylenie standardowe logarytmu)
+mu_L1 <- fit_LN_L1$estimate["meanlog"]
+sigma_L1 <- fit_LN_L1$estimate["sdlog"]
+
+# robię test kołmogorowa-smirnowa: czy dane pasują do dopasowanego rozkładu lognormalnego
+ks_L1 <- ks.test(dane_L1$strata, "plnorm", meanlog = mu_L1, sdlog = sigma_L1)
+
+wynik_LN_L1 <- data.frame(
+  Wielkosc = c("Parametr mu (meanlog)", "Parametr sigma (sdlog)",
+               "Statystyka D (test KS)", "p-value"),
+  Wartosc = c(liczba(mu_L1), liczba(sigma_L1),
+              liczba(as.numeric(ks_L1$statistic)),
+              liczba(ks_L1$p.value))
+)
+
+# tabela z wynikami
+kable(wynik_LN_L1, col.names = c("Wielkość", "Wartość"),
+      caption = paste("Dopasowanie rozkładu lognormalnego:", linia1)) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Wyniki (Buss_Distr):**
+
+- Estymowane parametry: **mu = 9,6617**, **sigma = 1,3061**, czyli logarytm strat `ln(X)` ma rozkład normalny ze średnią ~9,66 i odchyleniem standardowym ~1,31.
+- **Mediana strat** (`exp(mu)`) = exp(9,6617) ≈ **15 750**, około połowy strat jest poniżej tej kwoty, połowa powyżej.
+- Test KS: statystyka D = **0,0739**, p-value = **0,0775**.
+- **Decyzja:** p-value 0,0775 > 0,05 -> **brak podstaw do odrzucenia H0**, rozkład lognormalny pasuje do danych `Buss_Distr`.
+- **Uwaga:** dopasowanie przechodzi, ale ledwo... (p tylko niewiele większe od 0,05). Dopasowanie nie jest idealne, ale wystarczające.
+
+### Linia 2: `r linia2`
+
+```{r}
+# tak samo dla linii 2: dopasowuję rozkład lognormalny i wyciągam parametry
+fit_LN_L2 <- fitdistr(dane_L2$strata, "lognormal")
+mu_L2 <- fit_LN_L2$estimate["meanlog"]
+sigma_L2 <- fit_LN_L2$estimate["sdlog"]
+
+# test KS dla linii 2
+ks_L2 <- ks.test(dane_L2$strata, "plnorm", meanlog = mu_L2, sdlog = sigma_L2)
+
+wynik_LN_L2 <- data.frame(
+  Wielkosc = c("Parametr mu (meanlog)", "Parametr sigma (sdlog)",
+               "Statystyka D (test KS)", "p-value"),
+  Wartosc = c(liczba(mu_L2), liczba(sigma_L2),
+              liczba(as.numeric(ks_L2$statistic)),
+              liczba(ks_L2$p.value))
+)
+
+# tabela z wynikami
+kable(wynik_LN_L2, col.names = c("Wielkość", "Wartość"),
+      caption = paste("Dopasowanie rozkładu lognormalnego:", linia2)) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Wyniki (Com_Ban):**
+
+- Estymowane parametry: **mu = 10,0973**, **sigma = 0,9278**, czyli logarytm strat `ln(X)` ma rozkład normalny ze średnią ~10,10 i odchyleniem standardowym ~0,93.
+- **Mediana strat** (`exp(mu)`) = exp(10,0973) ≈ **24 343** wyższa niż w Buss_Distr (~15 750).
+- Sigma jest **mniejsza** niż w Buss_Distr (0,93 vs 1,31), czyli straty w Com_Ban są bardziej skupione wokół mediany (na skali logarytmicznej).
+- Test KS: statystyka D = **0,0211**, p-value = **0,8688**.
+- **Decyzja:** p-value 0,8688 > 0,05 -> **brak podstaw do odrzucenia H0**, rozkład lognormalny bardzo dobrze pasuje do danych `Com_Ban` (znacznie lepiej niż w Buss_Distr).
+
+### Porównanie z innymi rozkładami dotkliwości
+
+Polecenie projektu wymaga "możliwie najlepszego" rozkładu, więc dodatkowo porównuję dopasowanie lognormalnego z dwoma innymi rozkładami: **Weibulla** i **wykładniczym**.
+
+- **Rozkład Weibulla** ma **dwa parametry**: `shape` (kształt) i `scale` (skala). `Shape` decyduje o kształcie rozkładu (czy maleje od zera, czy ma szczyt w środku), a `scale` o jego rozciągnięciu (typowa wielkość straty). Dzięki dwóm parametrom jest bardziej elastyczny niż rozkład wykładniczy (jednoparametrowy).
+- **Rozkład wykładniczy** ma tylko **jeden parametr**: `rate` (λ). Zawsze ma ten sam kształt: najwięcej strat blisko zera, im większa strata, tym rzadsza. 
+
+Dla każdego rozkładu robię test Kołmogorowa-Smirnowa, który zwraca dwie liczby:
+
+- **Statystyka D**: największa różnica między tym, co jest w danych, a tym, 
+co przewiduje model. Im **mniejsze D**, tym dopasowanie lepsze.
+- **p-value**: im wyższe p-value, tym lepsze dopasowanie. Jeśli p > 0,05 -> rozkład pasuje (nie odrzucam H0).
+
+```{r}
+# Buss_Distr: Weibull i wykładniczy
+fit_W_L1 <- fitdistr(dane_L1$strata, "weibull")
+fit_E_L1 <- fitdistr(dane_L1$strata, "exponential")
+
+ks_W_L1 <- ks.test(dane_L1$strata, "pweibull",
+                   shape = fit_W_L1$estimate["shape"],
+                   scale = fit_W_L1$estimate["scale"])
+ks_E_L1 <- ks.test(dane_L1$strata, "pexp",
+                   rate = fit_E_L1$estimate["rate"])
+
+# Com_Ban: tak samo
+fit_W_L2 <- fitdistr(dane_L2$strata, "weibull")
+fit_E_L2 <- fitdistr(dane_L2$strata, "exponential")
+
+ks_W_L2 <- ks.test(dane_L2$strata, "pweibull",
+                   shape = fit_W_L2$estimate["shape"],
+                   scale = fit_W_L2$estimate["scale"])
+ks_E_L2 <- ks.test(dane_L2$strata, "pexp",
+                   rate = fit_E_L2$estimate["rate"])
+
+# tabela
+porownanie <- data.frame(
+  Linia    = c(rep(linia1, 3), rep(linia2, 3)),
+  Rozklad  = rep(c("Lognormalny", "Weibulla", "Wykładniczy"), 2),
+  D        = c(as.numeric(ks_L1$statistic), as.numeric(ks_W_L1$statistic), as.numeric(ks_E_L1$statistic),
+               as.numeric(ks_L2$statistic), as.numeric(ks_W_L2$statistic), as.numeric(ks_E_L2$statistic)),
+  p_value  = c(ks_L1$p.value, ks_W_L1$p.value, ks_E_L1$p.value,
+               ks_L2$p.value, ks_W_L2$p.value, ks_E_L2$p.value)
+)
+
+kable(porownanie, digits = 4,
+      col.names = c("Linia biznesowa", "Rozkład", "Statystyka D", "p-value"),
+      caption = "Porównanie dopasowania trzech rozkładów (test KS)") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Interpretacja porównania:**
+
+- **`Buss_Distr`**: lognormal przechodzi (p = ok. 0,08), ale **Weibull pasuje o wiele lepiej** (p = 0,93). Wykładniczy ma jeszcze wyższe p (0,99), ale ma tylko jeden parametr i jest mało elastyczny, więc słabiej oddaje rzeczywisty kształt strat. Wybieram więc **rozkład Weibulla** (dwa parametry: shape, scale -> lepiej dopasowany niż lognormal i bardziej elastyczny niż wykładniczy).
+- **`Com_Ban`**: lognormal pasuje bardzo dobrze (p = 0,87). Weibull i wykładniczy są **odrzucone** (p < 0,05). Zostaję więc przy **lognormalu**.
+
+### Dopasowanie rozkładu Weibulla dla `Buss_Distr` (wybór finalny)
+
+```{r}
+# dopasowuję rozkład Weibulla do strat Buss_Distr 
+shape_L1 <- as.numeric(fit_W_L1$estimate["shape"])
+scale_L1 <- as.numeric(fit_W_L1$estimate["scale"])
+
+# wyniki dopasowania
+wynik_W_L1 <- data.frame(
+  Wielkosc = c("Parametr shape (kształt)", "Parametr scale (skala, (typowa wielkość straty)",
+               "Statystyka D (test KS)", "p-value"),
+  Wartosc = c(liczba(shape_L1), sprintf("%.4f", scale_L1),
+              sprintf("%.4f", as.numeric(ks_W_L1$statistic)),
+              sprintf("%.4f", ks_W_L1$p.value))
+)
+
+kable(wynik_W_L1, col.names = c("Wielkość", "Wartość"),
+      caption = paste("Finalne dopasowanie rozkładu Weibulla:", linia1)) %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Wyniki finalne dla `Buss_Distr` (Weibull):**
+
+- Estymowane parametry: **shape = 1,0155**, **scale = 29 298,63**.
+- Test Kołmogorowa-Smirnowa: statystyka D = **0,0315**, p-value = **0,9291**.
+- **Decyzja:** p-value 0,9291 > 0,05 -> **brak podstaw do odrzucenia H0**, rozkład Weibulla bardzo dobrze pasuje do danych `Buss_Distr` (znacznie lepiej niż lognormal, który miał p = 0,08).
+- **Uwaga:** shape ≈ 1,02 oznacza, że dopasowany Weibull jest praktycznie identyczny z rozkładem wykładniczym (Weibull z shape = 1 to dokładnie rozkład wykładniczy). To wyjaśnia, czemu wykładniczy też ma bardzo wysokie p-value (0,99) - oba rozkłady opisują dane podobnie, tylko Weibull ma dodatkowy parametr elastyczności.
+
+**Końcowe parametry do symulacji Monte Carlo:**
+
+- `Buss_Distr`: rozkład **Weibulla**, shape = **1,0155**, scale = **29 298,63** (p = 0,9291)
+- `Com_Ban`: rozkład **lognormalny**, mu = **10,0973**, sigma = **0,9278** (p = 0,8688)
+
+Te wartości pójdą do symulacji Monte Carlo do losowania pojedynczych strat dla każdego z wylosowanych zdarzeń.
+
+### Wykresy diagnostyczne dopasowanych rozkładów
+
+Test Kołmogorowa-Smirnowa dał liczbowy wynik dopasowania, ale chcę też zobaczyć je wizualnie. Dla każdej linii robię dwa typy wykresów:
+
+- **Histogram strat z nałożoną krzywą gęstości teoretycznej**: jeśli dane są zgodne z rozkładem, słupki (empiryczne) powinny układać się pod czerwoną krzywą (teoretyczną).
+- **Q-Q plot (kwantyl-kwantyl)**: porównuje kwantyle empiryczne z kwantylami rozkładu teoretycznego. Jeśli dane są zgodne z rozkładem, punkty leżą na czerwonej linii prostej. Odchylenia od linii pokazują, gdzie dopasowanie jest słabsze (np. w ogonach).
+
+Dla `Buss_Distr` rysuję wykresy diagnostyczne **rozkładu Weibulla** (mój wybór finalny), dla `Com_Ban` **rozkładu lognormalnego** (na skali logarytmu strat, bo wtedy lognormal = normalny).
+
+**Linia 1: `r linia1` (rozkład Weibulla)**
+
+```{r fig.width=10, fig.height=4.5}
+par(mfrow = c(1, 2))
+
+# histogram strat z nałożoną krzywą Weibulla
+h_W_L1 <- hist(dane_L1$strata, breaks = 25, plot = FALSE)
+ymax_L1 <- max(c(h_W_L1$density,
+                 dweibull(seq(0, max(dane_L1$strata), length.out = 200),
+                          shape = shape_L1, scale = scale_L1))) * 1.25
+hist(dane_L1$strata, breaks = 25, probability = TRUE,
+     col = "lightblue", border = "white",
+     ylim = c(0, ymax_L1),
+     main = paste("Gęstość strat:", linia1),
+     xlab = "Wysokość pojedynczej straty", ylab = "Gęstość")
+curve(dweibull(x, shape = shape_L1, scale = scale_L1),
+      col = "red", lwd = 2, add = TRUE)
+legend("topright", legend = c("Z danych", "Z modelu (Weibull)"),
+       fill = c("lightblue", NA), border = c("white", NA),
+       lty = c(NA, 1), col = c(NA, "red"), lwd = c(NA, 2), bty = "n")
+
+# Q-Q plot dla Weibulla 
+emp_q_L1 <- sort(dane_L1$strata)
+teor_q_L1 <- qweibull(ppoints(length(emp_q_L1)), shape = shape_L1, scale = scale_L1)
+plot(teor_q_L1, emp_q_L1,
+     main = paste("Q-Q plot (Weibull):", linia1),
+     xlab = "Kwantyle z modelu (Weibull)",
+     ylab = "Kwantyle z danych",
+     pch = 20, col = "lightblue")
+abline(0, 1, col = "red", lwd = 2)
+
+par(mfrow = c(1, 1))
+
+```
+
+**Linia 2: `r linia2` (rozkład lognormalny)**
+
+```{r fig.width=10, fig.height=4.5}
+par(mfrow = c(1, 2))
+
+# histogram log(strat) + nałożona krzywa rozkładu normalnego
+h_log_L2 <- hist(log(dane_L2$strata), breaks = 35, plot = FALSE)
+ymax_L2 <- max(c(h_log_L2$density,
+                 dnorm(mu_L2, mean = mu_L2, sd = sigma_L2))) * 1.25
+hist(log(dane_L2$strata), breaks = 35, probability = TRUE,
+     col = "lightpink", border = "white",
+     ylim = c(0, ymax_L2),
+     main = paste("Gęstość log-strat:", linia2),
+     xlab = "log(strata)", ylab = "Gęstość")
+curve(dnorm(x, mean = mu_L2, sd = sigma_L2),
+      col = "darkblue", lwd = 2, add = TRUE)
+legend("topleft", legend = c("Z danych", "Z modelu (Lognormal)"),
+       fill = c("lightpink", NA), border = c("white", NA),
+       lty = c(NA, 1), col = c(NA, "darkblue"), lwd = c(NA, 2), bty = "n")
+
+# Q-Q plot 
+qqnorm(log(dane_L2$strata),
+       main = paste("Q-Q plot log-strat:", linia2),
+       xlab = "Kwantyle z modelu (Lognormal)",
+       ylab = "Kwantyle z danych",
+       pch = 20, col = "lightpink")
+qqline(log(dane_L2$strata), col = "darkblue", lwd = 2)
+
+par(mfrow = c(1, 1))
+```
+
+**Wyniki wykresów:**
+
+- **Buss_Distr - histogram strat z krzywą Weibulla**: czerwona krzywa Weibulla dobrze obejmuje słupki empiryczne w całym zakresie strat. Najwyższe słupki (małe i średnie straty) leżą blisko krzywej, a długi prawy ogon (duże straty) też mieści się w większości pod krzywą.
+- **Buss_Distr - Q-Q plot dla Weibulla**: punkty dość dobrze leżą na czerwonej linii diagonalnej w głównej części wykresu, z kilkoma punktami odstającymi w prawym ogonie (Weibull przewiduje nieco większe straty niż faktycznie występują). Mimo tego wynik testu Kołmogorowa-Smirnowa jest wysoki (p ≈ 0,93) -> rozkład Weibulla bardzo dobrze opisuje straty `Buss_Distr`.
+- **Com_Ban - histogram log-strat**: słupki dobrze leżą pod krzywą prawie wszędzie. Kształt empiryczny (różowe słupki) i teoretyczny (niebieska krzywa) dobrze się pokrywają. Dopasowanie wizualnie wygląda bardzo dobrze.
+- **Com_Ban - Q-Q plot**: punkty leżą prawie idealnie na linii diagonalnej w całym zakresie, z lekkimi odchyleniami w końcowych ogonach. Potwierdza to wynik testu KS (p ≈ 0,87, bardzo dobre dopasowanie).
+
+**Wniosek**: dla `Buss_Distr` używam rozkładu **Weibulla** (shape, scale), dla `Com_Ban` rozkładu **lognormalnego** (mu, sigma). Oba rozkłady mają wysokie p-value testu KS i dobrze pokrywają dane wizualnie. Te parametry pójdą do symulacji Monte Carlo.
+
+## Symulacja Monte Carlo
+
+Mając parametry rozkładu częstości i dotkliwości dla obu linii, generuję 
+**10 000 scenariuszy rocznych** (każdy scenariusz to jeden zsymulowany rok 
+działalności banku). W każdym scenariuszu:
+
+1. **Losuję, ile strat wystąpi w roku** w każdej linii, z rozkładu ujemnego 
+dwumianowego (parametry size i mu z poprzedniej sekcji).
+2. **Losuję, ile będzie warta każda strata**, dla `Buss_Distr` z rozkładu 
+Weibulla (parametry shape i scale), dla `Com_Ban` z rozkładu lognormalnego 
+(parametry mu i sigma).
+3. **Sumuję wszystkie straty z roku**, osobno dla każdej linii, a potem razem. 
+To jest moja roczna strata agregowana w tym scenariuszu.
+
+W ten sposób otrzymuję symulacyjny rozkład **rocznej łącznej straty banku** 
+z dwóch linii biznesowych.
+
+```{r cache=TRUE}
+set.seed(123)
+# liczba scenariuszy: 10 000 (każdy = jeden symulowany rok działalności banku)
+n_sym <- 10000
+
+# pusty wektor = zapiszę sumę strat z każdego rocznego scenariusza później
+straty_agregowane <- numeric(n_sym)
+
+# pętla po wszystkich 10 000 scenariuszach
+for (i in 1:n_sym) {
+  # losuję liczbę zdarzeń w roku dla linii 1 z rozkładu ujemnego dwumianowego
+  N1 <- rnbinom(1, size = size_L1, mu = mu_L1_NB)
+  # losuję N1 wartości strat z rozkładu Weibulla (Buss_Distr) i sumuję je
+  S1 <- if (N1 > 0) sum(rweibull(N1, shape = shape_L1, scale = scale_L1)) else 0
+  # losuję liczbę zdarzeń dla linii 2 (Com_Ban) i N2 strat z rozkładu lognormalnego
+  N2 <- rnbinom(1, size = size_L2, mu = mu_L2_NB)
+  S2 <- if (N2 > 0) sum(rlnorm(N2, meanlog = mu_L2, sdlog = sigma_L2)) else 0
+  
+  # łączna roczna strata banku w tym scenariuszu = suma strat z obu linii
+  straty_agregowane[i] <- S1 + S2
+}
+
+# statystyki dla rozkładu wszystkich symulowanych strat
+stat_sym <- data.frame(
+  Wielkosc = c("Liczba scenariuszy", "Min", "1. kwartyl", "Mediana",
+               "Średnia", "3. kwartyl", "Maks"),
+  Wartosc = c(format(length(straty_agregowane), big.mark = " "),
+              format(round(min(straty_agregowane), 2), big.mark = " ", nsmall = 2),
+              format(round(quantile(straty_agregowane, 0.25), 2), big.mark = " ", nsmall = 2),
+              format(round(median(straty_agregowane), 2), big.mark = " ", nsmall = 2),
+              format(round(mean(straty_agregowane), 2), big.mark = " ", nsmall = 2),
+              format(round(quantile(straty_agregowane, 0.75), 2), big.mark = " ", nsmall = 2),
+              format(round(max(straty_agregowane), 2), big.mark = " ", nsmall = 2))
+)
+
+kable(stat_sym, col.names = c("Wielkość", "Wartość"),
+      caption = "Statystyki rocznej straty agregowanej (symulacja)") %>%
+  kable_styling(bootstrap_options = c("striped"), full_width = FALSE)
+```
+
+**Wyniki symulacji:**
+
+- **Min = 259 222, Maks = 4 620 228**: rozpiętość strat między najlepszym a najgorszym scenariuszem jest bardzo duża (różnica ~17,8x). Jeden rok może być spokojny (~260 tys.), a inny bardzo zły (~4,6 mln).
+- **Mediana = 1 072 081**: w połowie scenariuszy roczna strata jest niższa, w połowie wyższa.
+- **Średnia = 1 102 825**, czyli **wyższa od mediany**. Rozkład jest **prawoskośny** (dłuższy prawy ogon).
+- **1. i 3. kwartyl: 859 498 - 1 307 485**: 50% scenariuszy mieści się w tym przedziale, czyli najczęściej strata roczna jest na tym poziomie.
+
+```{r fig.height=4.5}
+# histogram wszystkich 10 000 zsymulowanych rocznych strat
+hist(straty_agregowane, breaks = 60, col = "lightblue", border = "white",
+     xaxt = "n",
+     main = "Symulacyjny rozkład rocznej straty agregowanej (10 000 scenariuszy)",
+     xlab = "Roczna strata agregowana (mln)", ylab = "Częstotliwość")
+
+osie_x <- seq(0, ceiling(max(straty_agregowane)/1e6) * 1e6, by = 1e6)
+axis(1, at = osie_x, labels = paste0(osie_x / 1e6, " mln"))
+
+# pionowe linie => średnią (czerwona) i medianę (zielona) z symulacji
+abline(v = mean(straty_agregowane), col = "red", lwd = 2, lty = 2)
+abline(v = median(straty_agregowane), col = "darkgreen", lwd = 2, lty = 2)
+
+# legenda
+legend("topright",
+       legend = c(paste("Średnia =", format(round(mean(straty_agregowane)), big.mark = " ")),
+                  paste("Mediana =", format(round(median(straty_agregowane)), big.mark = " "))),
+       lty = 2, col = c("red", "darkgreen"), lwd = 2, bty = "n")
+
+# powiększony ogon - tylko najgorsze scenariusze (powyżej 2 mln)
+ogon_sym <- straty_agregowane[straty_agregowane > 2e6]
+
+hist(ogon_sym, breaks = 30, col = "red", border = "white",
+     xaxt = "n",
+     main = "Powiększony prawy ogon (scenariusze powyżej 2 mln)",
+     xlab = "Roczna strata agregowana (mln)",
+     ylab = "Liczba scenariuszy")
+osie_x_ogon <- seq(2e6, ceiling(max(ogon_sym)/1e6) * 1e6, by = 5e5)
+axis(1, at = osie_x_ogon, labels = paste0(osie_x_ogon / 1e6, " mln"))
+
+```
+
+**Wyniki wykresu:**
+
+- Kształt rozkładu jest lekko **prawoskośny**.
+- **Średnia (czerwona)** i **mediana (zielona)** leżą blisko siebie (mediana ≈ 1 072 081, średnia ≈ 1 102 825), ale średnia jest na prawo od mediany -> potwierdza to prawoskośność rozkładu.
+- **Większość scenariuszy (najwyższe słupki)** koncentruje się wokół mediany. Powyżej 2 mln scenariuszy jest znacznie mniej, ale **dochodzą one aż do ~4,6 mln**. To właśnie te **rzadkie, ale bardzo drogie scenariusze** są najważniejsze w ryzyku operacyjnym bo to one wyznaczają poziom **OpVaR (99,9%)**. Ten 
+symulacyjny rozkład jest punktem wyjścia do liczenia **OpVaR i OpES** w następnej sekcji z 10 000 wartości wyciągnę kwantyl 99,9% (najgorsze 0,1% scenariuszy).
+
+
+## Wyznaczenie OpVaR i OpES (99,9%)
+
+**OpVaR** (Operational Value at Risk) na poziomie ufności $\alpha$ to poziom rocznej straty agregowanej, który nie zostanie przekroczony z prawdopodobieństwem $\alpha$. Jeśli posortuję wszystkie 10 000 zsymulowanych strat od najmniejszej do największej i wezmę dla $\alpha = 0{,}999$ taką wartość, której nie przekroczy 9 990 z nich, to właśnie ta wartość będzie moim OpVaR.
+
+**OpES** (Operational Expected Shortfall) to średnia ze strat tylko z tych scenariuszy, w których strata przekroczyła OpVaR. Biorę te 10 zsymulowanych strat (z 10 000), które są wyższe niż OpVaR, i liczę z nich średnią. 
+
+```{r}
+# poziom ufności = 99,9% (najgorszy 1 z 1000 lat)
+alpha <- 0.999
+
+# OpVaR = kwantyl 99,9% z rozkładu symulowanych strat
+OpVaR <- quantile(straty_agregowane, probs = alpha)
+
+# OpES = średnia ze strat, które przekroczyły OpVaR 
+OpES <- mean(straty_agregowane[straty_agregowane > OpVaR])
+
+wyniki <- data.frame(
+  Miara = c("OpVaR (99,9%)", "OpES (99,9%)"),
+  Wartosc = c(format(round(unname(OpVaR), 2), big.mark = " ", nsmall = 2),
+              format(round(OpES, 2), big.mark = " ", nsmall = 2))
+)
+
+# tabela z wynikami
+kable(wyniki,
+      caption = "Wartości OpVaR i OpES na poziomie ufności 99,9%",
+      col.names = c("Miara", "Wartość")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+**Wyniki:**
+
+- **OpVaR(99,9%) = 2 542 605** z prawdopodobieństwem **99,9%** roczna strata operacyjna z obu linii biznesowych nie przekroczy tej kwoty. Czyli tylko **1 raz na 1000 lat** można spodziewać się straty wyższej niż ta wartość.
+- **OpES(99,9%) = 2 900 967** jeśli już dojdzie do tego skrajnego scenariusza (1 z 1000), to **średnia** strata w takich bardzo złych latach wynosi tę kwotę.
+- **OpES > OpVaR** (2 900 967 > 2 542 605) **OpES to średnia z liczb większych od OpVaR, więc sama też musi być większa od OpVaR.**
+
+
+```{r fig.height=5}
+# wykres 1: cały histogram z zaznaczonym ogonem powyżej OpVaR (czerwony) + linie OpVaR i OpES
+h_op <- hist(straty_agregowane, breaks = 80, plot = FALSE)
+# słupki w ogonie (wartości > OpVaR) maluję na czerwono, resztę na niebiesko
+kolory <- ifelse(h_op$mids > OpVaR, "red", "lightblue")
+plot(h_op, col = kolory, border = "white", freq = TRUE,
+     xaxt = "n",
+     main = "Cały rozkład rocznej straty agregowanej",
+     xlab = "Roczna strata agregowana (mln)",
+     ylab = "Liczba scenariuszy")
+# oś X w milionach (zamiast notacji naukowej 1e+06)
+osie_x <- seq(0, ceiling(max(straty_agregowane)/1e6) * 1e6, by = 1e6)
+axis(1, at = osie_x, labels = paste0(osie_x / 1e6, " mln"))
+
+# pionowa przerywana linia w miejscu OpVaR i ciągła w miejscu OpES
+abline(v = OpVaR, col = "red", lwd = 3, lty = 2)
+abline(v = OpES, col = "darkred", lwd = 3, lty = 1)
+
+legend("topright",
+       legend = c(paste0("OpVaR (99,9%) = ", format(round(OpVaR), big.mark = " ")),
+                  paste0("OpES (99,9%) = ", format(round(OpES), big.mark = " "))),
+       col = c("red", "darkred"), lwd = c(3, 3), lty = c(2, 1), bty = "n")
+```
+
+## Powiększony ogon (powyżej OpVaR)
+
+```{r fig.height=5}
+# wykres 2: powiększony ogon -> tylko scenariusze powyżej OpVaR (najgorsze 0,1%)
+# scenariusze powyżej 90% OpVaR
+# nie tylko sam ogon (powyżej OpVaR), ale też trochę przed -> żeby było widać linię OpVaR
+ogon <- straty_agregowane[straty_agregowane > OpVaR * 0.9]
+
+
+hist(ogon, breaks = 20, col = "red", border = "white", freq = TRUE,
+     xaxt = "n",
+     main = "Powiększony ogon rozkładu (powyżej OpVaR)",
+     xlab = "Roczna strata agregowana (mln)",
+     ylab = "Liczba scenariuszy")
+# oś X co 0,5 mln (bo zakres jest węższy)
+osie_x_ogon <- seq(floor(min(ogon)/1e6)*1e6, ceiling(max(ogon)/1e6)*1e6, by = 5e5)
+axis(1, at = osie_x_ogon, labels = paste0(osie_x_ogon / 1e6, " mln"))
+
+# linie OpVaR i OpES (te same co w głównym wykresie)
+abline(v = OpVaR, col = "red", lwd = 3, lty = 2)
+abline(v = OpES, col = "darkred", lwd = 3, lty = 1)
+
+legend("topright",
+       legend = c(paste0("OpVaR (99,9%) = ", format(round(OpVaR), big.mark = " ")),
+                  paste0("OpES (99,9%) = ", format(round(OpES), big.mark = " "))),
+       col = c("red", "darkred"), lwd = c(3, 3), lty = c(2, 1), bty = "n")
+```
+**Wykres histogramu:**
+
+- **Czerwony ogon** (po prawej, za przerywaną linią OpVaR ≈ 2 542 605) to scenariusze, w których strata przekroczyła OpVaR. **0,1% wszystkich symulacji**, czyli 10 lat z 10 000 dlatego słupki są bardzo niskie. Każdy z tych scenariuszy oznacza bardzo wysoką stratę, więc choć są nieliczne, są bardzo drogie dla banku.
+- **Ciągła linia** = OpES (2 900 967), średnia z najgorszych scenariuszy (tych powyżej OpVaR).
+
+
+```{r fig.height=4.5}
+## wykres 3: krzywa pokazująca jaki procent scenariuszy ma stratę poniżej danej kwoty z zaznaczeniem OpVaR
+plot(ecdf(straty_agregowane),
+     main = "Procent scenariuszy ze stratą poniżej danej kwoty",
+     xlab = "Roczna strata agregowana (mln)",
+     ylab = "Procent scenariuszy",
+     col = "lightblue", lwd = 1.5,
+     xaxt = "n", yaxt = "n")
+osie_x2 <- seq(0, ceiling(max(straty_agregowane)/1e6) * 1e6, by = 1e6)
+axis(1, at = osie_x2, labels = paste0(osie_x2 / 1e6, " mln"))
+# oś Y w % 
+osie_y2 <- c(0, 0.25, 0.5, 0.75, 0.999)
+axis(2, at = osie_y2, labels = c("0%", "25%", "50%", "75%", "99,9%"))
+
+# linia na poziomie 99,9%
+abline(h = alpha, col = "red", lty = 2, lwd = 2)
+
+# pionowa czerwona linia w miejscu OpVaR
+abline(v = OpVaR, col = "red", lty = 2, lwd = 2)
+
+# punkt przecięcia 
+points(OpVaR, alpha, col = "red", pch = 19, cex = 1.5)
+text(OpVaR, alpha-0.1,
+     labels = paste0("OpVaR(99,9%)\n= ", format(round(OpVaR), big.mark = " ")),
+     pos = 2, col = "red")
+```
+
+**Wyniki wykresu:**
+
+- Krzywa pokazuje, **jaki procent moich 10 000 scenariuszy ma stratę poniżej 
+danej kwoty**. Im wyższy punkt na krzywej, tym więcej scenariuszy mieści 
+się "poniżej" tej kwoty.
+- **Pozioma linia czerwona na poziomie 99,9%** = poziom ufności OpVaR. 
+**Pionowa linia czerwona** = wartość OpVaR (kwota, do której dochodzi 99,9% 
+scenariuszy).
+- Punkt przecięcia (czerwona kropka) **graficznie wyznacza OpVaR**: 99,9% 
+scenariuszy ma stratę ≤ **2 542 605**, czyli tylko 0,1% przekracza tę kwotę.
+- Krzywa rośnie szybko w obszarze najczęstszych strat (~0,5-2 mln), a powyżej 
+~2 mln staje się prawie pozioma i osiąga 100% już około 3 mln (znacznie przed 
+maksimum 4,6 mln). Te najgorsze scenariusze powyżej OpVaR (między 2,54 mln 
+a 4,6 mln) są bardzo rzadkie - to właśnie te 0,1% przypadków, w których strata 
+**przekracza** OpVaR.
+
+
+# Podsumowanie
+
+W ramach projektu zrealizowano analizę ryzyka operacyjnego dla wybranych dwóch linii biznesowych banku (Buss_Distr i Com_Ban) w oparciu o **model LDA** (Loss Distribution Approach), czyli jeden z wariantów metody zaawansowanego pomiaru (AMA).
+
+**Główne wyniki**:
+
+- Estymowane parametry rozkładu **ujemnego dwumianowego** (częstość): dla `Buss_Distr` size = 46,541, mu = 8,514; dla `Com_Ban` size = 33,609, mu = 22,771.
+- Dla dotkliwości wybrałam **różne rozkłady** dla każdej linii: dla `Buss_Distr` rozkład **Weibulla** (shape = 1,016, scale = 29 298,63), dla `Com_Ban` rozkład **lognormalny** ($\mu$ = 10,097, $\sigma$ = 0,928). Wybór wynika z porównania trzech rozkładów testem Kołmogorowa-Smirnowa -> dla każdej linii wybrałam ten, który najlepiej pasował do danych.
+- Na podstawie 10 000 symulacji Monte Carlo wyznaczono roczną stratę agregowaną.
+- **OpVaR(99,9%) = 2 542 605**, czyli z prawdopodobieństwem 99,9% roczna strata operacyjna z dwóch wybranych linii nie przekroczy tej kwoty.
+- **OpES(99,9%) = 2 900 967**, czyli średnia strata w 0,1% najgorszych scenariuszy.
+
+**Wnioski z analizy:**
+
+- Obie linie różnią się wyraźnie skalą: `Com_Ban` ma ok. 2,7x więcej zdarzeń rocznie niż `Buss_Distr` (22,77 vs 8,51). Czyli większość strat w mojej symulacji pochodzi z `Com_Ban`.
+- Dopasowanie rozkładów dotkliwości jest dobre w obu liniach: dla `Buss_Distr` Weibull ma p = 0,9291 (test Kołmogorowa-Smirnowa), dla `Com_Ban` lognormal ma p = 0,8688. Wybór różnych rozkładów dla różnych linii daje lepsze dopasowanie niż użycie jednego rozkładu dla obu.
+- **OpVaR(99,9%) ≈ 2 542 605** wskazuje wartość kapitału, którą bank powinien utrzymać w rezerwie.
+
+
+
